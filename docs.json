@@ -4,46 +4,23 @@
   "name": "Makeship BizSys API",
   "colors": {
     "primary": "#0D9373",
-    "light": "#07C983",
+    "light": "#07C983", 
     "dark": "#0D9373"
   },
   "favicon": "/favicon.svg",
-  "navigation": {
-    "tabs": [
-      {
-        "tab": "API Reference",
-        "groups": [
-          {
-            "group": "Shopify Sales Data API",
-            "openapi": "readme-api-spec.yaml"
-          }
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Support",
-          "href": "mailto:support@makeship.com",
-          "icon": "envelope"
-        }
-      ]
+  "navigation": [
+    {
+      "group": "Shopify Sales Data API",
+      "openapi": "readme-api-spec.yaml"
     }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
+  ],
   "api": {
     "baseUrl": "https://api-dev.makeship.cloud",
     "auth": {
       "method": "bearer"
+    },
+    "playground": {
+      "mode": "simple"
     }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view"
-   ]
   }
 }
