@@ -1,0 +1,555 @@
+openapi: 3.1.0
+info:
+  title: Makeship BizSys API
+  version: 1.0.0
+  description: |
+    # Product Sales Data API
+    
+    Get detailed sales information for any product in your Shopify store. Perfect for tracking performance, calculating creator payouts, and understanding your product metrics.
+    
+    **This endpoint simplifies querying Shopify's GraphQL API directly.** There is no database caching involved - all data returned is accurate from Shopify at the time of querying.
+    
+    ## How We Get Your Sales Data
+    
+    This API analyzes **every single order** in your Shopify store to calculate accurate sales metrics for your specific product. Here's exactly what happens:
+    
+    ### 1. Finding Your Product Orders
+    - We search through all your Shopify orders to find ones containing your product
+    - We look at each product variant (size, color, etc.) to catch every sale
+    - We use Shopify's search system to find orders efficiently, even if you have thousands
+    
+    ### 2. Counting Units Sold
+    - **Total Units**: Sum of `quantity` field from all line items containing any variant of your product
+    - **Refunded Units**: Sum of `quantity` field from refund line items that specifically reference your product
+    - **Net Units**: Total Units minus Refunded Units
+    
+    ### 3. Calculating Sales Amounts
+    - **Gross Sales**: Sum of (`originalUnitPriceSet.amount` × `quantity`) for all line items containing your product
+    - **Discounts**: Sum of line-item discounts plus proportional allocation of order-level discounts
+      - Line-item discounts: (`originalUnitPriceSet.amount` - `discountedUnitPriceSet.amount`) × `quantity`
+      - Order-level discounts: Proportionally allocated based on how many line items contain your product
+    - **Refunds**: Sum of `subtotalSet.amount` from refund line items that specifically reference your product  
+    - **Net Sales**: Gross Sales minus Total Discounts minus Total Refunds
+    
+    ### 4. Data Sources
+    All calculations use individual **line item data** from Shopify orders, never order totals:
+    - Line items are filtered to only include your specific product (by `legacyResourceId`)
+    - Mixed orders (containing other products) only contribute the portion related to your product
+    - Refunds are tracked at the line item level to ensure only your product's returns are counted
+    - Discounts from order-level promotions are proportionally allocated across matching line items
+    
+    ### 5. Processing Method
+    - GraphQL queries with pagination to retrieve all historical orders containing your product variants
+    - Filters orders by `variant_id` to efficiently find relevant transactions
+    - Processes all order data in real-time (no cached/stored calculations)
+    - Results are rounded to 2 decimal places for financial precision
+    
+    ## Why These Numbers Matter
+    
+    - **Net Units** = What Shopify dashboard shows as "units sold"
+    - **Net Sales** = Your actual revenue for creator payout calculations
+    - **Order IDs** = Full audit trail you can verify in Shopify admin
+    - **Refund tracking** = Accurate deductions for returns
+
+  contact:
+    name: Makeship BizSys API Support
+    email: support@makeship.com
+  
+servers:
+  - url: https://api-dev.makeship.cloud
+    description: Development API
+  - url: https://api.makeship.cloud
+    description: Production API
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Requires Bearer token with `creator-payouts:read` scope.
+        
+        **How to get your token:**
+        1. Contact your Makeship account manager
+        2. Request API access with creator-payouts:read scope
+        3. Use the provided Bearer token in the Authorization header
+        
+        **Example:**
+        ```
+        Authorization: Bearer your-token-here
+        ```
+
+  responses:
+    UnauthorizedError:
+      description: Authentication required - invalid or missing Bearer token
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "Authentication required"
+
+paths:
+  /v1/shopify/sales-data:
+    get:
+      summary: Get Shopify Sales Data
+      description: |
+        **Required Scope:** `creator-payouts:read`
+        
+        Retrieve comprehensive sales data for a specific product from your Shopify store.
+        
+        **Date Range Behavior:**
+        - **No dates provided**: Returns complete historical sales data (all-time)
+        - **Both dates provided**: Returns sales for the specified period only
+        - **Partial dates**: Returns 400 error (must provide both startDate and endDate, or neither)
+        
+        **Performance Notes:**
+        - Can take 4-8 seconds for products with 1000+ orders
+        - 60 second maximum processing time
+        - Subject to Shopify API rate limits
+
+      operationId: getShopifySalesData
+      tags:
+        - Shopify Sales Data
+      
+      parameters:
+        - name: productId
+          in: query
+          required: true
+          description: "Shopify product ID (numeric string)"
+          schema:
+            type: string
+            pattern: '^[0-9]+$'
+          example: "8368095363228"
+            
+        - name: startDate
+          in: query
+          required: false
+          description: |
+            Start date for sales data in YYYY-MM-DD format.
+            
+            **Important:** If you provide startDate, you must also provide endDate.
+            Leave both empty for all-time sales data.
+          schema:
+            type: string
+            format: date
+          examples:
+            recent_90_days:
+              value: "2025-08-21"
+              summary: "Recent 90-day period start"
+            year_start:
+              value: "2024-01-01" 
+              summary: "Beginning of 2024"
+              
+        - name: endDate
+          in: query
+          required: false
+          description: |
+            End date for sales data in YYYY-MM-DD format.
+            
+            **Important:** If you provide endDate, you must also provide startDate.
+            Leave both empty for all-time sales data.
+          schema:
+            type: string
+            format: date
+          examples:
+            recent_90_days:
+              value: "2025-11-19"
+              summary: "Recent 90-day period end"
+            year_end:
+              value: "2024-12-31"
+              summary: "End of 2024"
+              
+        - name: include_order_ids
+          in: query
+          required: false
+          description: |
+            Include detailed order breakdown with order IDs in the response.
+            
+            **Performance Impact:**
+            - `false` (default): Faster response, smaller payload, no order ID arrays
+            - `true`: Slower response, larger payload, includes all order ID arrays for audit trails
+            
+            **When to use `true`:**
+            - When you need to verify specific orders in Shopify admin
+            - For detailed audit trails and compliance reporting
+            - When building order-level analytics
+            
+            **When to use `false` (default):**
+            - For dashboard metrics and high-level reporting
+            - When response speed is important
+            - For automated/frequent API calls
+          schema:
+            type: boolean
+            default: false
+          examples:
+            fast_metrics:
+              value: false
+              summary: "Fast response - metrics only (default)"
+            detailed_audit:
+              value: true
+              summary: "Full response - with order IDs for verification"
+
+      security:
+        - bearerAuth: ["creator-payouts:read"]
+
+      responses:
+        '200':
+          description: Sales data retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    required:
+                      - productId
+                      - totalUnits
+                      - refundedUnits
+                      - netUnits
+                      - grossSales
+                      - totalDiscounts
+                      - totalRefunds
+                      - netSales
+                      - salesPeriod
+                      - product
+                      - currency
+                      - queryExecutedAt
+                    properties:
+                      productId:
+                        type: string
+                        description: "The Shopify product ID that was queried"
+                        example: "8368095363228"
+                      
+                      # Unit Metrics
+                      totalUnits:
+                        type: integer
+                        description: "Total units sold before refunds (raw sales volume)"
+                        example: 1035
+                      refundedUnits:
+                        type: integer
+                        description: "Units returned by customers (refund volume)"
+                        example: 7
+                      netUnits:
+                        type: integer
+                        description: "Final units kept by customers (totalUnits - refundedUnits)"
+                        example: 1028
+                      
+                      # Financial Metrics  
+                      grossSales:
+                        type: number
+                        format: decimal
+                        description: "Total revenue before any deductions (original prices × quantities)"
+                        example: 31039.65
+                      totalDiscounts:
+                        type: number
+                        format: decimal
+                        description: "Customer savings from promotions and discounts"
+                        example: 196.63
+                      totalRefunds:
+                        type: number
+                        format: decimal
+                        description: "Money returned to customers for this product"
+                        example: 209.93
+                      netSales:
+                        type: number
+                        format: decimal
+                        description: "Final revenue after all deductions (grossSales - totalDiscounts - totalRefunds)"
+                        example: 30633.09
+                      
+                      # Time Period
+                      salesPeriod:
+                        type: object
+                        description: "Describes the time period covered by this sales data"
+                        required:
+                          - type
+                        properties:
+                          type:
+                            type: string
+                            enum: ["all_time", "date_range"]
+                            description: "Type of time period queried"
+                          startDate:
+                            type: string
+                            format: date
+                            description: "Start date (only present for date_range queries)"
+                          endDate:
+                            type: string
+                            format: date
+                            description: "End date (only present for date_range queries)"
+                        examples:
+                          - type: "all_time"
+                          - type: "date_range"
+                            startDate: "2024-01-01"
+                            endDate: "2024-12-31"
+                      
+                      # Order Transparency (optional)
+                      orderBreakdown:
+                        type: object
+                        description: |
+                          **Only included when `include_order_ids=true`**
+                          
+                          Detailed breakdown of orders for verification and audit purposes. 
+                          This data allows you to verify calculations by cross-referencing specific 
+                          order numbers in your Shopify admin.
+                        required:
+                          - soldOrderIds
+                          - discountedOrderIds
+                          - refundedOrderIds
+                          - totalOrdersWithSales
+                          - totalOrdersWithDiscounts
+                          - totalOrdersWithRefunds
+                          - averageUnitsPerOrder
+                        properties:
+                          soldOrderIds:
+                            type: array
+                            items:
+                              type: string
+                            description: "Array of all Shopify order numbers containing sales of this product"
+                            example: ["6622021517468", "6622021714076", "6622024140828"]
+                          discountedOrderIds:
+                            type: array
+                            items:
+                              type: string
+                            description: "Order numbers that included discounts on this product"
+                            example: ["6623079071900", "6625709490332"]
+                          refundedOrderIds:
+                            type: array
+                            items:
+                              type: string
+                            description: "Order numbers that had refunds for this product"
+                            example: ["6622576902300", "6623326666908"]
+                          totalOrdersWithSales:
+                            type: integer
+                            description: "Count of unique orders containing this product"
+                            example: 990
+                          totalOrdersWithDiscounts:
+                            type: integer
+                            description: "Count of orders that had discounts applied"
+                            example: 10
+                          totalOrdersWithRefunds:
+                            type: integer
+                            description: "Count of orders that had refunds processed"
+                            example: 7
+                          averageUnitsPerOrder:
+                            type: number
+                            format: decimal
+                            description: "Average number of units purchased per order (shows buying patterns)"
+                            example: 1.05
+                      
+                      # Product Information
+                      product:
+                        type: object
+                        description: "Information about the queried product"
+                        required:
+                          - legacyId
+                          - title
+                          - handle
+                        properties:
+                          legacyId:
+                            type: string
+                            description: "Shopify's legacy product ID (same as productId parameter)"
+                            example: "8368095363228"
+                          title:
+                            type: string
+                            description: "Product name as it appears in Shopify"
+                            example: "Stumbler O'Hare Plushie"
+                          handle:
+                            type: string
+                            description: "URL-friendly product handle"
+                            example: "stumbler-ohare-plushie"
+                      
+                      # Metadata
+                      currency:
+                        type: string
+                        description: "Store currency (all monetary values are in this currency)"
+                        example: "USD"
+                      queryExecutedAt:
+                        type: string
+                        format: date-time
+                        description: "Timestamp when this data was calculated (ISO 8601 format)"
+                        example: "2025-11-19T13:25:15.345Z"
+              
+              examples:
+                fast_response:
+                  summary: "Fast response - metrics only (default behavior)"
+                  description: "Example showing typical usage without order IDs for faster performance"
+                  value:
+                    success: true
+                    data:
+                      productId: "8368095363228"
+                      totalUnits: 1035
+                      refundedUnits: 7
+                      netUnits: 1028
+                      grossSales: 31039.65
+                      totalDiscounts: 196.63
+                      totalRefunds: 209.93
+                      netSales: 30633.09
+                      salesPeriod:
+                        type: "all_time"
+                      product:
+                        legacyId: "8368095363228"
+                        title: "Stumbler O'Hare Plushie"
+                        handle: "stumbler-ohare-plushie"
+                      currency: "USD"
+                      queryExecutedAt: "2025-11-19T13:25:15.345Z"
+                
+                detailed_response:
+                  summary: "Detailed response with order IDs (include_order_ids=true)"
+                  description: "Example showing full response with order breakdown for audit purposes"
+                  value:
+                    success: true
+                    data:
+                      productId: "8368095363228"
+                      totalUnits: 1035
+                      refundedUnits: 7
+                      netUnits: 1028
+                      grossSales: 31039.65
+                      totalDiscounts: 196.63
+                      totalRefunds: 209.93
+                      netSales: 30633.09
+                      salesPeriod:
+                        type: "all_time"
+                      orderBreakdown:
+                        soldOrderIds: ["6622021517468", "6622021714076", "6622024140828"]
+                        discountedOrderIds: ["6623079071900", "6625709490332"]
+                        refundedOrderIds: ["6622576902300", "6623326666908"]
+                        totalOrdersWithSales: 990
+                        totalOrdersWithDiscounts: 10
+                        totalOrdersWithRefunds: 7
+                        averageUnitsPerOrder: 1.05
+                      product:
+                        legacyId: "8368095363228"
+                        title: "Stumbler O'Hare Plushie"
+                        handle: "stumbler-ohare-plushie"
+                      currency: "USD"
+                      queryExecutedAt: "2025-11-19T13:25:15.345Z"
+                
+                date_range_sales:
+                  summary: "Q4 2024 sales data (fast response)"
+                  description: "Example showing sales data for a specific quarter without order IDs"
+                  value:
+                    success: true
+                    data:
+                      productId: "8368095363228"
+                      totalUnits: 156
+                      refundedUnits: 2
+                      netUnits: 154
+                      grossSales: 4680.00
+                      totalDiscounts: 93.60
+                      totalRefunds: 60.00
+                      netSales: 4526.40
+                      salesPeriod:
+                        type: "date_range"
+                        startDate: "2024-10-01"
+                        endDate: "2024-12-31"
+                      product:
+                        legacyId: "8368095363228"
+                        title: "Stumbler O'Hare Plushie" 
+                        handle: "stumbler-ohare-plushie"
+                      currency: "USD"
+                      queryExecutedAt: "2025-11-19T13:25:15.345Z"
+
+        '400':
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: string
+                    description: "Specific error message explaining what went wrong"
+              examples:
+                missing_product_id:
+                  summary: "Missing required productId"
+                  value:
+                    error: "productId is required"
+                invalid_date_format:
+                  summary: "Invalid date format"
+                  value:
+                    error: "Invalid date format. Use ISO 8601 format (YYYY-MM-DD)"
+                backwards_dates:
+                  summary: "End date before start date"
+                  value:
+                    error: "startDate must be before endDate"
+                partial_date_range:
+                  summary: "Only one date provided"
+                  value:
+                    error: "Provide both startDate and endDate, or neither for all-time sales"
+
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+        '404':
+          description: Product not found in Shopify store
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                  - productId
+                properties:
+                  error:
+                    type: string
+                    example: "Product not found"
+                  productId:
+                    type: string
+                    description: "The productId that was not found"
+                    example: "8368095363228"
+
+        '500':
+          description: Internal server error - Shopify API issue
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                  - message
+                properties:
+                  error:
+                    type: string
+                    example: "Failed to retrieve sales data"
+                  message:
+                    type: string
+                    description: "Detailed error message for debugging"
+                    example: "Shopify GraphQL API timeout"
+                  debug:
+                    type: object
+                    description: "Additional debugging information (only in development)"
+                    properties:
+                      stack:
+                        type: string
+                      productId:
+                        type: string
+
+tags:
+  - name: Shopify Sales Data
+    description: |
+      **Real-time Shopify sales analytics**
+      
+      Get accurate sales metrics directly from your Shopify store data. Perfect for creator payouts, 
+      financial reporting, and performance analytics.
+      
+      **Key Benefits:**
+      - ✅ Real-time data (no caching delays)
+      - ✅ Line-item accuracy (handles mixed orders)
+      - ✅ Complete audit trail (order IDs provided)
+      - ✅ Refund tracking (accurate revenue calculations)
+      - ✅ Handles large datasets (automatic pagination)
